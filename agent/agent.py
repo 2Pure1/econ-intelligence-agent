@@ -256,8 +256,10 @@ async def dispatch_tool(name: str, inputs: dict) -> str:
 # ── Agent ──────────────────────────────────────────────────────────────────────
 class EconAgent:
     def __init__(self):
+        if "ANTHROPIC_API_KEY" not in os.environ:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is not set.")
         self.client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-        self.model  = os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-5")
+        self.model  = os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
 
     async def run(
         self,
@@ -285,13 +287,25 @@ class EconAgent:
             iterations += 1
             logger.info(f"Agent iteration {iterations} | session={session.session_id}")
 
-            if stream and iterations == 1:
-                # Stream the first response for immediate feedback
+            if stream:
+                # Use the streaming helper for the first generation OR any subsequent 
+                # generation after tool results are added.
+                full_text = ""
                 async for chunk in self._stream_turn(session):
+                    if not chunk.startswith("\n\n_Executing"):
+                        full_text += chunk
                     yield chunk
-                break
+                
+                # Check the last message in history (which was added by _stream_turn)
+                # to see if we need to continue the loop (i.e. if it contains tool_calls)
+                last_msg = session.history[-1]
+                tool_uses = [b for b in last_msg["content"] if hasattr(b, "type") and b.type == "tool_use"]
+                if not tool_uses:
+                    break
+                # If there were tools, _stream_turn already executed them and added 
+                # tool_results to history. The loop continues to process those results.
             else:
-                # Non-streaming for tool-result turns (Claude needs full context)
+                # Non-streaming implementation (as before)
                 response = self.client.messages.create(
                     model=self.model,
                     max_tokens=4096,
@@ -299,38 +313,20 @@ class EconAgent:
                     tools=TOOLS,
                     messages=session.history,
                 )
-
-                # Append Claude's response to history
-                session.history.append({
-                    "role":    "assistant",
-                    "content": response.content,
-                })
-
-                # Check if Claude wants to use tools
+                session.history.append({"role": "assistant", "content": response.content})
                 tool_uses = [b for b in response.content if b.type == "tool_use"]
-
                 if not tool_uses:
-                    # No more tool calls — extract text and we're done
-                    text = " ".join(
-                        b.text for b in response.content if hasattr(b, "text")
-                    )
+                    text = " ".join(b.text for b in response.content if hasattr(b, "text"))
                     yield text
                     break
 
-                # Execute all tool calls in parallel
                 tool_results = await asyncio.gather(*[
                     dispatch_tool(tu.name, tu.input) for tu in tool_uses
                 ])
-
-                # Feed results back to Claude
                 session.history.append({
                     "role": "user",
                     "content": [
-                        {
-                            "type":        "tool_result",
-                            "tool_use_id": tu.id,
-                            "content":     result,
-                        }
+                        {"type": "tool_result", "tool_use_id": tu.id, "content": result}
                         for tu, result in zip(tool_uses, tool_results)
                     ],
                 })

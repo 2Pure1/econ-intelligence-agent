@@ -91,7 +91,7 @@ def health():
         "status":      "ok",
         "uptime_s":    round(time.time() - _start_ts, 1),
         "sessions":    len(_sessions),
-        "model":       os.environ.get("ANTHROPIC_MODEL", "claude-opus-4-5"),
+        "model":       os.environ.get("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620"),
         "vector_db":   os.environ.get("VECTOR_DB", "chroma"),
     }
 
